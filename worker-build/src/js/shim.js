@@ -28,6 +28,36 @@ class Entrypoint extends WorkerEntrypoint {}
 
 $HANDLERS
 
+// Helper to lazily create the RPC instance
+Entrypoint.prototype._getRpc = function (Ctor) {
+  if (!this._rpcInstanceMap) this._rpcInstanceMap = new Map();
+  if (!this._rpcInstanceMap.has(Ctor)) {
+    this._rpcInstanceMap.set(Ctor, new Ctor(this.env));
+  }
+  return this._rpcInstanceMap.get(Ctor);
+};
+
+const EXCLUDE_RPC_EXPORT = ["constructor", "new", "free"];
+
+// Register RPC entrypoint methods into Entrypoint
+Object.entries(exports).forEach(([exportName, exportValue]) => {
+  if (typeof exportValue === "function" && exportValue.prototype?.__is_rpc__) {
+    const Ctor = exportValue;
+
+    const methodNames = Object.getOwnPropertyNames(Ctor.prototype)
+      .filter(name => !EXCLUDE_RPC_EXPORT.includes(name) && typeof exportValue.prototype[name] === "function");
+
+    for (const methodName of methodNames) {
+      if (!Entrypoint.prototype.hasOwnProperty(methodName)) {
+        Entrypoint.prototype[methodName] = function (...args) {
+          const rpc = this._getRpc(Ctor);
+          return rpc[methodName](...args);
+        };
+      }
+    }
+  }
+});
+
 const instanceProxyHooks = {
   set: (target, prop, value, receiver) => Reflect.set(target.instance, prop, value, receiver),
   has: (target, prop) => Reflect.has(target.instance, prop),

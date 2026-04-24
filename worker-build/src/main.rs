@@ -15,10 +15,12 @@ const SHIM_UNWIND_FILE: &str = include_str!("./js/shim-unwind.js");
 pub(crate) mod binary;
 mod build;
 mod build_lock;
+mod durable_object;
 mod emoji;
 mod lockfile;
 mod main_legacy;
 mod versions;
+mod wrangler_config;
 
 use build::{Build, BuildOptions};
 use build_lock::BuildLock;
@@ -218,13 +220,22 @@ fn add_export_wrappers(out_dir: &Path) -> Result<()> {
         }
     }
 
+    let do_classes = durable_object::get_durable_object_class_names()
+        .unwrap_or_default();
+
     let shim_path = output_path(out_dir, "shim.js");
     let mut output = fs::read_to_string(&shim_path)
         .with_context(|| format!("Failed to read {}", shim_path.display()))?;
     for class_name in class_names {
-        output.push_str(&format!(
-            "export const {class_name} = new Proxy(exports.{class_name}, classProxyHooks);\n"
-        ));
+        if do_classes.contains(&class_name) {
+            output.push_str(&format!(
+                "export const {class_name} = createDurableObjectWrapper(exports.{class_name});\n"
+            ));
+        } else {
+            output.push_str(&format!(
+                "export const {class_name} = new Proxy(exports.{class_name}, classProxyHooks);\n"
+            ));
+        }
     }
     fs::write(&shim_path, output)
         .with_context(|| format!("Failed to write {}", shim_path.display()))?;

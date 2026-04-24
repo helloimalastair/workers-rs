@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { WorkerEntrypoint, DurableObject } from "cloudflare:workers";
 import * as exports from "./index.js";
 
 Error.stackTraceLimit = 100;
@@ -7,6 +7,37 @@ const initState = exports.__worker_init_state();
 class Entrypoint extends WorkerEntrypoint {}
 
 $HANDLERS
+
+function createDurableObjectWrapper(OriginalClass) {
+  const methodNames = Object.getOwnPropertyNames(OriginalClass.prototype)
+    .filter(name => name !== 'constructor' && name !== 'free' && typeof OriginalClass.prototype[name] === 'function');
+
+  const WrappedClass = class extends DurableObject {
+    constructor(...args) {
+      super(...args);
+      this._inner = Reflect.construct(OriginalClass, args, new.target);
+      this._instanceId = initState.instanceId;
+      this._ctor = OriginalClass;
+      this._args = args;
+    }
+
+    _checkReinit() {
+      if (this._instanceId !== initState.instanceId) {
+        this._inner = Reflect.construct(this._ctor, this._args, this._ctor);
+        this._instanceId = initState.instanceId;
+      }
+    }
+  };
+
+  for (const methodName of methodNames) {
+    WrappedClass.prototype[methodName] = function (...args) {
+      this._checkReinit();
+      return this._inner[methodName](...args);
+    };
+  }
+
+  return WrappedClass;
+}
 
 const instanceProxyHooks = {
   set: (target, prop, value, receiver) => Reflect.set(target.instance, prop, value, receiver),

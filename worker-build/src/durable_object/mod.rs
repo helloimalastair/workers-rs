@@ -1,0 +1,3 @@
+pub use get_durable_object_class_names::get_durable_object_class_names;
+
+mod get_durable_object_class_names;

@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { WorkerEntrypoint, DurableObject } from "cloudflare:workers";
 import * as exports from "./index.js";
 
 Error.stackTraceLimit = 100;
@@ -57,6 +57,60 @@ Object.entries(exports).forEach(([exportName, exportValue]) => {
     }
   }
 });
+
+function createDurableObjectWrapper(OriginalClass) {
+  // Collect all method names from the original prototype, excluding wasm-bindgen internals.
+  const methodNames = Object.getOwnPropertyNames(OriginalClass.prototype)
+    .filter(name => name !== 'constructor' && name !== 'free' && typeof OriginalClass.prototype[name] === 'function');
+
+  const WrappedClass = class extends DurableObject {
+    constructor(...args) {
+      super(...args);
+      checkReinitialize();
+      this._inner = Reflect.construct(OriginalClass, args, new.target);
+      this._instanceId = initState.instanceId;
+      this._ctor = OriginalClass;
+      this._args = args;
+    }
+
+    _checkReinit() {
+      if (this._instanceId !== initState.instanceId) {
+        checkReinitialize();
+        this._inner = Reflect.construct(this._ctor, this._args, this._ctor);
+        this._instanceId = initState.instanceId;
+      }
+    }
+  };
+
+  for (const methodName of methodNames) {
+    const original = OriginalClass.prototype[methodName];
+    if (original.constructor === Function) {
+      // Synchronous
+      WrappedClass.prototype[methodName] = function (...args) {
+        this._checkReinit();
+        try {
+          return this._inner[methodName](...args);
+        } catch (e) {
+          handleMaybeCritical(e);
+          throw e;
+        }
+      };
+    } else {
+      // Async (returns Promise)
+      WrappedClass.prototype[methodName] = async function (...args) {
+        this._checkReinit();
+        try {
+          return await this._inner[methodName](...args);
+        } catch (e) {
+          handleMaybeCritical(e);
+          throw e;
+        }
+      };
+    }
+  }
+
+  return WrappedClass;
+}
 
 const instanceProxyHooks = {
   set: (target, prop, value, receiver) => Reflect.set(target.instance, prop, value, receiver),
